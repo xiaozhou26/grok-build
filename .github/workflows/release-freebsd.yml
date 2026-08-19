@@ -53,7 +53,7 @@ jobs:
           envs: CARGO_HOME CARGO_TARGET_DIR RIPGREP_VERSION
           prepare: |
             pkg update -f
-            pkg install -y bash cmake git gmake nasm perl5 pkgconf python3 rust
+            pkg install -y bash cmake git gmake nasm perl5 pkgconf protobuf python3 rust
           run: |
             set -eu
 
