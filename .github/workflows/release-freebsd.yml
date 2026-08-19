@@ -72,21 +72,23 @@ jobs:
             python3 - <<'PY'
             from pathlib import Path
 
-            needle = '''            #[cfg(target_os = "linux")]
-            let key = (cap.resolved.clone(), cap.is_file);
-            '''
-            fallback = needle + '''            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-            let key = (cap.original.clone(), cap.is_file);
-            '''
             matches = list(Path(".cargo-freebsd/registry/src").glob("*/nono-0.53.0/src/capability.rs"))
             if len(matches) != 1:
                 raise SystemExit(f"expected one nono-0.53.0 source, found {len(matches)}")
             path = matches[0]
-            source = path.read_text()
-            if "target_os = \"freebsd\"" not in source:
-                if needle not in source:
+            lines = path.read_text().splitlines()
+            if not any('target_os = "freebsd"' in line for line in lines):
+                for index, line in enumerate(lines):
+                    if line.strip() == 'let key = (cap.resolved.clone(), cap.is_file);':
+                        indent = line[:len(line) - len(line.lstrip())]
+                        lines[index + 1:index + 1] = [
+                            f'{indent}#[cfg(not(any(target_os = "linux", target_os = "macos")))]',
+                            f'{indent}let key = (cap.original.clone(), cap.is_file);',
+                        ]
+                        break
+                else:
                     raise SystemExit("nono capability.rs layout changed; refusing an unsafe patch")
-                path.write_text(source.replace(needle, fallback, 1))
+                path.write_text("\n".join(lines) + "\n")
             PY
 
             export GROK_TOOLS_BUNDLE_RG_PATH="$PWD/.freebsd-tools/bin/rg"
