@@ -1,4 +1,4 @@
-name: Release FreeBSD pkg CLI
+name: Release native FreeBSD CLI
 
 on:
   workflow_dispatch:
@@ -15,51 +15,94 @@ concurrency:
   group: release-freebsd-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  CARGO_HOME: ${{ github.workspace }}/.cargo-freebsd
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target/freebsd15-amd64
+  RIPGREP_VERSION: 15.0.0
+
 jobs:
-  package-freebsd:
-    name: FreeBSD 15 amd64 package
+  build-freebsd:
+    name: Native FreeBSD 15 amd64 release
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 240
 
     steps:
       - name: Check out source
         uses: actions/checkout@v4
 
-      - name: Install package and extract CLI on FreeBSD
+      - name: Restore Cargo and target cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cargo-freebsd/registry
+            .cargo-freebsd/git
+            target/freebsd15-amd64
+          key: freebsd15-amd64-rust-1.97-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            freebsd15-amd64-rust-1.97-
+            freebsd15-amd64-
+
+      - name: Build native CLI on FreeBSD
         uses: vmactions/freebsd-vm@v1.5.3
         with:
           release: "15.0"
           arch: x86_64
-          mem: 4096
-          cpu: 2
+          mem: 8192
+          cpu: 4
+          cache-after-prepare: true
+          envs: CARGO_HOME CARGO_TARGET_DIR RIPGREP_VERSION
           prepare: |
-            sysrc linux_enable=YES
-            service linux onestart
             pkg update -f
-            pkg install -y grok-build
+            pkg install -y bash cmake git gmake nasm perl5 pkgconf python3 rust
           run: |
             set -eu
 
-            package_version=$(pkg query '%v' grok-build)
-            binary=$(pkg query '%Fp' grok-build | awk '$0 == "/usr/local/bin/grok"')
-            test -n "$binary"
-            test -x "$binary"
+            rustc --version
+            cargo --version
+            mkdir -p "$CARGO_HOME" "$CARGO_TARGET_DIR" .freebsd-tools
 
-            archive="grok-build-${package_version}-freebsd15-amd64.tar.gz"
-            staging="dist/grok-build-${package_version}-freebsd15-amd64"
+            cargo install \
+              --locked \
+              --version "$RIPGREP_VERSION" \
+              --root "$PWD/.freebsd-tools" \
+              --no-default-features \
+              ripgrep
+
+            export GROK_TOOLS_BUNDLE_RG_PATH="$PWD/.freebsd-tools/bin/rg"
+            cargo build \
+              --locked \
+              --release \
+              --package xai-grok-pager-bin \
+              --bin xai-grok-pager \
+              --features release-dist
+
+            version=$(awk '
+              /^name = "xai-grok-pager-bin"$/ { package = 1; next }
+              package && /^version = / {
+                gsub(/version = |"/, "")
+                print
+                exit
+              }
+            ' Cargo.lock)
+            test -n "$version"
+
+            archive="grok-build-${version}-freebsd15-amd64.tar.gz"
+            staging="dist/grok-build-${version}-freebsd15-amd64"
             rm -rf dist
             mkdir -p "$staging"
-            install -m 0755 "$binary" "$staging/grok"
+            install -m 0755 "$CARGO_TARGET_DIR/release/xai-grok-pager" "$staging/grok"
+            install -m 0644 LICENSE THIRD-PARTY-NOTICES "$staging/"
 
             file "$staging/grok"
-            file "$staging/grok" | grep -q 'ELF 64-bit.*x86-64'
+            file "$staging/grok" | grep -q 'FreeBSD'
+            "$staging/grok" --version
             tar -C dist -czf "dist/$archive" "$(basename "$staging")"
             sha256 "dist/$archive" > "dist/$archive.sha256"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: grok-build-freebsd15-amd64
+          name: grok-build-native-freebsd15-amd64
           path: |
             dist/*.tar.gz
             dist/*.tar.gz.sha256
