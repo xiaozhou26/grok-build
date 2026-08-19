@@ -33,6 +33,8 @@ jobs:
           mem: 4096
           cpu: 2
           prepare: |
+            sysrc linux_enable=YES
+            service linux onestart
             pkg update -f
             pkg install -y grok-build
           run: |
