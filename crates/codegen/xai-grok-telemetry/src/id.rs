@@ -43,28 +43,53 @@ fn load_or_compute_agent_id() -> String {
         }
     }
 
-    // Compute a unique machine hash:
-    // - macOS: mid uses unique hardware IDs (serial, UUID, SEID).
-    // - Linux: /etc/machine-id is shared across containers from the same base
-    //   image, so include $HOSTNAME (container/host name) for uniqueness.
-    // - Fallback: random UUIDv4 if mid or hostname are unavailable.
-    let machine_hash = if cfg!(target_os = "linux") {
-        match std::env::var("HOSTNAME") {
-            Ok(hostname) if !hostname.is_empty() => {
-                let key = format!("agent_id:{hostname}");
-                mid::get(&key).unwrap_or_else(|_| uuid::Uuid::new_v4().to_string())
-            }
-            _ => uuid::Uuid::new_v4().to_string(),
-        }
-    } else {
-        mid::get("agent_id").unwrap_or_else(|_| uuid::Uuid::new_v4().to_string())
-    };
+    let machine_hash = machine_hash();
     let id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, machine_hash.as_bytes()).to_string();
 
     // Save to cache file with owner-only perms (best effort).
     let _ = write_agent_id_cache(&cache_path, &id);
 
     id
+}
+
+#[cfg(target_os = "linux")]
+fn machine_hash() -> String {
+    match std::env::var("HOSTNAME") {
+        Ok(hostname) if !hostname.is_empty() => {
+            let key = format!("agent_id:{hostname}");
+            mid::get(&key).unwrap_or_else(|_| uuid::Uuid::new_v4().to_string())
+        }
+        _ => uuid::Uuid::new_v4().to_string(),
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn machine_hash() -> String {
+    mid::get("agent_id").unwrap_or_else(|_| uuid::Uuid::new_v4().to_string())
+}
+
+#[cfg(target_os = "freebsd")]
+fn machine_hash() -> String {
+    std::fs::read_to_string("/etc/hostid")
+        .ok()
+        .map(|hostid| hostid.trim().to_string())
+        .filter(|hostid| !hostid.is_empty())
+        .or_else(|| {
+            std::env::var("HOSTNAME")
+                .ok()
+                .filter(|name| !name.is_empty())
+        })
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+}
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows",
+    target_os = "freebsd"
+)))]
+fn machine_hash() -> String {
+    uuid::Uuid::new_v4().to_string()
 }
 
 /// Write `$GROK_HOME/agent_id` as owner-read/write only (Unix 0o600) — it is a

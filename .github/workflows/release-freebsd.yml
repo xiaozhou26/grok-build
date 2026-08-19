@@ -93,12 +93,19 @@ jobs:
             PY
 
             export GROK_TOOLS_BUNDLE_RG_PATH="$PWD/.freebsd-tools/bin/rg"
+            set +e
             cargo build \
               --locked \
               --release \
               --package xai-grok-pager-bin \
               --bin xai-grok-pager \
               --features release-dist
+            build_status=$?
+            set -e
+            printf '%s\n' "$build_status" > .freebsd-build-status
+            if [ "$build_status" -ne 0 ]; then
+              exit 0
+            fi
 
             version=$(awk '
               /^name = "xai-grok-pager-bin"$/ { package = 1; next }
@@ -132,6 +139,9 @@ jobs:
             .cargo-freebsd/git
             target/freebsd15-amd64
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
+      - name: Check FreeBSD build result
+        run: test "$(cat .freebsd-build-status)" = 0
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
