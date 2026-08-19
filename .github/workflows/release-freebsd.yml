@@ -1,4 +1,4 @@
-name: Release FreeBSD CLI
+name: Release FreeBSD pkg CLI
 
 on:
   workflow_dispatch:
@@ -15,120 +15,52 @@ concurrency:
   group: release-freebsd-${{ github.ref }}
   cancel-in-progress: false
 
-env:
-  TARGET: x86_64-unknown-freebsd
-  PACKAGE: xai-grok-pager-bin
-  BINARY: xai-grok-pager
-  RIPGREP_VERSION: 15.0.0
-
 jobs:
-  build-freebsd:
-    name: x86_64 FreeBSD release
+  package-freebsd:
+    name: FreeBSD 15 amd64 package
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 30
 
     steps:
       - name: Check out source
         uses: actions/checkout@v4
 
-      - name: Read pinned Rust toolchain
-        id: rust
-        shell: bash
-        run: |
-          set -euo pipefail
-          version=$(sed -n 's/^channel = "\([^"]*\)"/\1/p' rust-toolchain.toml)
-          test -n "$version"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
-      - name: Install Rust target
-        shell: bash
-        run: |
-          set -euo pipefail
-          rustup toolchain install "${{ steps.rust.outputs.version }}" --profile minimal
-          rustup target add "$TARGET" --toolchain "${{ steps.rust.outputs.version }}"
-
-      - name: Install Zig
-        uses: goto-bus-stop/setup-zig@v2
+      - name: Install package and extract CLI on FreeBSD
+        uses: vmactions/freebsd-vm@v1.5.3
         with:
-          version: 0.13.0
+          release: "15.0"
+          arch: x86_64
+          mem: 4096
+          cpu: 2
+          prepare: |
+            pkg update -f
+            pkg install -y grok-build
+          run: |
+            set -eu
 
-      - name: Install cargo-zigbuild
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-zigbuild
+            package_version=$(pkg query '%v' grok-build)
+            binary=$(pkg query '%Fp' grok-build | awk '$0 == "/usr/local/bin/grok"')
+            test -n "$binary"
+            test -x "$binary"
 
-      - name: Cache Cargo build data
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ env.TARGET }}-release
-          cache-targets: true
+            archive="grok-build-${package_version}-freebsd15-amd64.tar.gz"
+            staging="dist/grok-build-${package_version}-freebsd15-amd64"
+            rm -rf dist
+            mkdir -p "$staging"
+            install -m 0755 "$binary" "$staging/grok"
 
-      - name: Build FreeBSD ripgrep bundle
-        shell: bash
-        run: |
-          set -euo pipefail
-          crate=/tmp/ripgrep.crate
-          source=/tmp/ripgrep-${RIPGREP_VERSION}
-          checksum=$(curl --fail --location --retry 5 \
-            "https://crates.io/api/v1/crates/ripgrep/${RIPGREP_VERSION}" \
-            | jq -r '.version.checksum')
-          curl --fail --location --retry 5 \
-            --output "$crate" \
-            "https://crates.io/api/v1/crates/ripgrep/${RIPGREP_VERSION}/download"
-          echo "$checksum  $crate" | sha256sum --check --strict
-          tar -xzf "$crate" -C /tmp
-
-          cargo +"${{ steps.rust.outputs.version }}" zigbuild \
-            --manifest-path "$source/Cargo.toml" \
-            --locked \
-            --release \
-            --target "$TARGET" \
-            --bin rg
-
-          rg_path="$source/target/${TARGET}/release/rg"
-          test -x "$rg_path"
-          file "$rg_path" | grep -q 'FreeBSD'
-          echo "GROK_TOOLS_BUNDLE_RG_PATH=$rg_path" >> "$GITHUB_ENV"
-
-      - name: Build interactive CLI
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo +"${{ steps.rust.outputs.version }}" zigbuild \
-            --locked \
-            --release \
-            --target "$TARGET" \
-            --package "$PACKAGE" \
-            --bin "$BINARY" \
-            --features release-dist
-
-      - name: Package release
-        id: package
-        shell: bash
-        run: |
-          set -euo pipefail
-          version=$(cargo metadata --no-deps --format-version 1 \
-            | jq -r '.packages[] | select(.name == env.PACKAGE) | .version')
-          archive="grok-build-cli-v${version}-${TARGET}.tar.gz"
-          staging="dist/grok-build-cli-v${version}-${TARGET}"
-
-          mkdir -p "$staging"
-          install -m 0755 "target/${TARGET}/release/${BINARY}" "$staging/grok"
-          install -m 0644 LICENSE THIRD-PARTY-NOTICES "$staging/"
-          tar -C dist -czf "dist/${archive}" "$(basename "$staging")"
-          sha256sum "dist/${archive}" > "dist/${archive}.sha256"
-
-          file "$staging/grok"
-          file "$staging/grok" | grep -q 'FreeBSD'
-          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+            file "$staging/grok"
+            file "$staging/grok" | grep -q 'ELF 64-bit.*x86-64'
+            tar -C dist -czf "dist/$archive" "$(basename "$staging")"
+            sha256 "dist/$archive" > "dist/$archive.sha256"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.package.outputs.archive }}
+          name: grok-build-freebsd15-amd64
           path: |
-            dist/${{ steps.package.outputs.archive }}
-            dist/${{ steps.package.outputs.archive }}.sha256
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
           if-no-files-found: error
 
       - name: Publish GitHub release
@@ -137,5 +69,5 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            dist/${{ steps.package.outputs.archive }}
-            dist/${{ steps.package.outputs.archive }}.sha256
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
