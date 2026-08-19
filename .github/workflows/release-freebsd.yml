@@ -68,6 +68,27 @@ jobs:
               --no-default-features \
               ripgrep
 
+            cargo fetch --locked
+            python3 - <<'PY'
+            from pathlib import Path
+
+            needle = '''            #[cfg(target_os = "linux")]
+            let key = (cap.resolved.clone(), cap.is_file);
+            '''
+            fallback = needle + '''            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            let key = (cap.original.clone(), cap.is_file);
+            '''
+            matches = list(Path(".cargo-freebsd/registry/src").glob("*/nono-0.53.0/src/capability.rs"))
+            if len(matches) != 1:
+                raise SystemExit(f"expected one nono-0.53.0 source, found {len(matches)}")
+            path = matches[0]
+            source = path.read_text()
+            if "target_os = \"freebsd\"" not in source:
+                if needle not in source:
+                    raise SystemExit("nono capability.rs layout changed; refusing an unsafe patch")
+                path.write_text(source.replace(needle, fallback, 1))
+            PY
+
             export GROK_TOOLS_BUNDLE_RG_PATH="$PWD/.freebsd-tools/bin/rg"
             cargo build \
               --locked \
