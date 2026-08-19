@@ -31,15 +31,16 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Restore Cargo and target cache
-        uses: actions/cache@v4
+        id: cargo-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             .cargo-freebsd/registry
             .cargo-freebsd/git
             target/freebsd15-amd64
-          key: freebsd15-amd64-rust-1.97-${{ hashFiles('Cargo.lock') }}
+          key: freebsd15-amd64-rust-1.97-${{ hashFiles('Cargo.lock') }}-${{ github.run_id }}
           restore-keys: |
-            freebsd15-amd64-rust-1.97-
+            freebsd15-amd64-rust-1.97-${{ hashFiles('Cargo.lock') }}-
             freebsd15-amd64-
 
       - name: Build native CLI on FreeBSD
@@ -121,6 +122,16 @@ jobs:
             "$staging/grok" --version
             tar -C dist -czf "dist/$archive" "$(basename "$staging")"
             sha256 "dist/$archive" > "dist/$archive.sha256"
+
+      - name: Save Cargo and target cache
+        if: always() && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .cargo-freebsd/registry
+            .cargo-freebsd/git
+            target/freebsd15-amd64
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
