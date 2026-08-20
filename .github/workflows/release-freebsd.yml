@@ -179,6 +179,8 @@ jobs:
 
             export GROK_TOOLS_BUNDLE_RG_PATH="$PWD/.freebsd-tools/bin/rg"
             export GROK_SHELL_BUNDLE_RG_PATH="$PWD/.freebsd-tools/bin/rg"
+            # vmactions mounts the workspace with the host runner owner; allow git metadata reads in the root VM user.
+            git config --global --add safe.directory "$PWD"
 
             set +e
             cargo build \
