@@ -185,10 +185,9 @@ jobs:
             set +e
             cargo build \
               --locked \
-              --workspace \
               --release \
-              --bins \
-              --examples \
+              --package xai-grok-pager-bin \
+              --bin xai-grok-pager \
               > .freebsd-build.log 2>&1
             build_status=$?
             cat .freebsd-build.log
@@ -212,26 +211,13 @@ jobs:
             bundle="grok-build-${version}-freebsd14.3-amd64"
             staging="dist/$bundle"
             rm -rf "$staging"
-            mkdir -p "$staging/bin" "$staging/examples"
+            mkdir -p "$staging/bin"
 
-            # Keep only top-level Cargo outputs. deps/build/incremental contain
-            # hashed internal executables and are deliberately not released.
-            find "$CARGO_TARGET_DIR/release" -maxdepth 1 -type f -perm -111 | while IFS= read -r file_path; do
-              if file "$file_path" | grep -q 'ELF 64-bit.*FreeBSD'; then
-                install -m 0755 "$file_path" "$staging/bin/$(basename "$file_path")"
-              fi
-            done
-            if [ -d "$CARGO_TARGET_DIR/release/examples" ]; then
-              find "$CARGO_TARGET_DIR/release/examples" -maxdepth 1 -type f -perm -111 | while IFS= read -r file_path; do
-                if file "$file_path" | grep -q 'ELF 64-bit.*FreeBSD'; then
-                  name=$(basename "$file_path")
-                  case "$name" in
-                    *-????????????????) continue ;;
-                  esac
-                  install -m 0755 "$file_path" "$staging/examples/$name"
-                fi
-              done
-            fi
+            # Release only the selected pager executable; Cargo still builds its
+            # transitive library dependencies, but skips unrelated workspace targets.
+            test -f "$CARGO_TARGET_DIR/release/xai-grok-pager"
+            file "$CARGO_TARGET_DIR/release/xai-grok-pager" | grep -q 'ELF 64-bit.*FreeBSD'
+            install -m 0755 "$CARGO_TARGET_DIR/release/xai-grok-pager" "$staging/bin/xai-grok-pager"
 
             test -x "$staging/bin/xai-grok-pager"
             ln -sf xai-grok-pager "$staging/bin/grok"
@@ -241,7 +227,7 @@ jobs:
               "$FREEBSD_RELEASE" "$RUST_VERSION" "$version" > "$staging/BUILD-INFO.txt"
 
             : > "$staging/ELF-AUDIT.txt"
-            find "$staging/bin" "$staging/examples" -type f -perm -111 | sort | while IFS= read -r file_path; do
+            find "$staging/bin" -type f -perm -111 | sort | while IFS= read -r file_path; do
               echo "===== ${file_path#$staging/} =====" >> "$staging/ELF-AUDIT.txt"
               file "$file_path" >> "$staging/ELF-AUDIT.txt"
               ldd "$file_path" >> "$staging/ELF-AUDIT.txt" 2>&1 || true
@@ -258,9 +244,9 @@ jobs:
             "$staging/bin/grok" --version 2> .grok-version.stderr
             test ! -s .grok-version.stderr
 
-            find "$staging/bin" "$staging/examples" -type f -perm -111 \
+            find "$staging/bin" -type f -perm -111 \
               -exec sha256 -q {} \; > /dev/null
-            (cd "$staging" && find bin examples -type f -perm -111 -print | sort) > "$staging/TARGETS.txt"
+            (cd "$staging" && find bin -type f -perm -111 -print | sort) > "$staging/TARGETS.txt"
             (cd dist && tar -czf "$bundle.tar.gz" "$bundle")
             sha256 "dist/$bundle.tar.gz" > "dist/$bundle.tar.gz.sha256"
 
