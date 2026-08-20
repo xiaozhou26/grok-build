@@ -187,7 +187,6 @@ jobs:
               --release \
               --bins \
               --examples \
-              --benches \
               > .freebsd-build.log 2>&1
             build_status=$?
             cat .freebsd-build.log
@@ -211,7 +210,7 @@ jobs:
             bundle="grok-build-${version}-freebsd14.3-amd64"
             staging="dist/$bundle"
             rm -rf "$staging"
-            mkdir -p "$staging/bin" "$staging/examples" "$staging/benches"
+            mkdir -p "$staging/bin" "$staging/examples"
 
             # Keep only top-level Cargo outputs. deps/build/incremental contain
             # hashed internal executables and are deliberately not released.
