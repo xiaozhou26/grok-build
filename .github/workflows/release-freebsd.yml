@@ -28,6 +28,7 @@ concurrency:
 
 env:
   CARGO_HOME: ${{ github.workspace }}/.cargo-freebsd
+  RUSTUP_HOME: ${{ github.workspace }}/.rustup-freebsd
   CARGO_TARGET_DIR: ${{ github.workspace }}/target/freebsd14.3-amd64
   FREEBSD_RELEASE: "14.3"
   RUST_VERSION: "1.94.0"
@@ -53,6 +54,7 @@ jobs:
             .cargo-freebsd/registry
             .cargo-freebsd/git
             .cargo-freebsd/bin
+            .rustup-freebsd
             .freebsd-tools
             target/freebsd14.3-amd64
           key: freebsd14.3-amd64-rust-${{ env.RUST_VERSION }}-${{ hashFiles('Cargo.lock') }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -69,7 +71,7 @@ jobs:
           mem: 12288
           cpu: 4
           cache-after-prepare: true
-          envs: CARGO_HOME CARGO_TARGET_DIR FREEBSD_RELEASE RUST_VERSION RIPGREP_VERSION
+          envs: CARGO_HOME RUSTUP_HOME CARGO_TARGET_DIR FREEBSD_RELEASE RUST_VERSION RIPGREP_VERSION
           prepare: |
             # FreeBSD:14 packages may be built on a newer 14.x patch release.
             # Keep the VM/base ABI at 14.3 while allowing build-tool packages.
@@ -94,6 +96,15 @@ jobs:
             export GIT_SSL_CAINFO="$SSL_CERT_FILE"
             export CARGO_HTTP_CAINFO="$SSL_CERT_FILE"
             test -r "$SSL_CERT_FILE"
+
+            # cache-after-prepare restores the VM disk, while CARGO_HOME and
+            # RUSTUP_HOME live in the host-shared workspace. Repair missing
+            # rustup shims/toolchains after either cache is restored alone.
+            if ! command -v rustup >/dev/null 2>&1; then
+              rustup-init -y --no-modify-path --profile minimal --default-toolchain "$RUST_VERSION"
+            fi
+            rustup toolchain install "$RUST_VERSION" --profile minimal
+            rustup default "$RUST_VERSION"
 
             rustc --version
             cargo --version
@@ -258,6 +269,7 @@ jobs:
             .cargo-freebsd/registry
             .cargo-freebsd/git
             .cargo-freebsd/bin
+            .rustup-freebsd
             .freebsd-tools
             target/freebsd14.3-amd64
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
