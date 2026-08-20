@@ -80,7 +80,7 @@ fn rlimit(kind: RlimitKind) -> Option<(Option<u64>, Option<u64>)> {
     if unsafe { libc::getrlimit(resource, &mut lim) } != 0 {
         return None;
     }
-    let val = |v: libc::rlim_t| (v != libc::RLIM_INFINITY).then_some(v);
+    let val = |v: libc::rlim_t| (v != libc::RLIM_INFINITY).then_some(v as u64);
     Some((val(lim.rlim_cur), val(lim.rlim_max)))
 }
 

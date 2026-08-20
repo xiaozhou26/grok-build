@@ -33,7 +33,9 @@ xai-tty-utils = { workspace = true }
 # `cpal` -> `alsa-sys` never reaches the fully-static musl release binary.
 # `cpal` is target-gated to non-Linux below, so enabling `audio` on Linux pulls
 # no extra dependency — it only compiles the subprocess backend.
-default = ["audio"]
+# Keep workspace-wide builds portable on FreeBSD shared hosts. Production
+# consumers opt into `audio` explicitly on platforms with an audio backend.
+default = []
 # Alternate default feature set that opts out of audio. CI builds the voice
 # crate WITHOUT `audio` so the pager binary has no mic capture in the test
 # sandbox (it has no audio device), which is what the pager's local PTY e2e

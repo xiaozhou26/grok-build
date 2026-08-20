@@ -1,34 +1,49 @@
-name: Release native FreeBSD CLI
+name: Release native FreeBSD workspace
 
 on:
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Publish/update a GitHub Release for this build"
+        required: false
+        type: boolean
+        default: false
+      release_tag:
+        description: "Release tag for a manual build (blank = grok-v<version>-freebsd14.3)"
+        required: false
+        type: string
   push:
     branches:
       - main
     tags:
       - "v*"
+      - "grok-v*"
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-freebsd-${{ github.ref }}
+  group: release-freebsd14-${{ github.ref }}
   cancel-in-progress: false
 
 env:
   CARGO_HOME: ${{ github.workspace }}/.cargo-freebsd
-  CARGO_TARGET_DIR: ${{ github.workspace }}/target/freebsd15-amd64
-  RIPGREP_VERSION: 15.0.0
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target/freebsd14.3-amd64
+  FREEBSD_RELEASE: "14.3"
+  RUST_VERSION: "1.94.0"
+  RIPGREP_VERSION: "15.0.0"
 
 jobs:
   build-freebsd:
-    name: Native FreeBSD 15 amd64 release
+    name: Native FreeBSD 14.3 amd64 workspace release
     runs-on: ubuntu-24.04
-    timeout-minutes: 240
+    timeout-minutes: 360
 
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Restore Cargo and target cache
         id: cargo-cache
@@ -37,39 +52,60 @@ jobs:
           path: |
             .cargo-freebsd/registry
             .cargo-freebsd/git
-            target/freebsd15-amd64
-          key: freebsd15-amd64-rust-1.97-${{ hashFiles('Cargo.lock') }}-${{ github.run_id }}
+            .cargo-freebsd/bin
+            .freebsd-tools
+            target/freebsd14.3-amd64
+          key: freebsd14.3-amd64-rust-${{ env.RUST_VERSION }}-${{ hashFiles('Cargo.lock') }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            freebsd15-amd64-rust-1.97-${{ hashFiles('Cargo.lock') }}-
-            freebsd15-amd64-
+            freebsd14.3-amd64-rust-${{ env.RUST_VERSION }}-${{ hashFiles('Cargo.lock') }}-
+            freebsd14.3-amd64-rust-${{ env.RUST_VERSION }}-
+            freebsd14.3-amd64-
 
-      - name: Build native CLI on FreeBSD
+      - name: Build all workspace targets in a native FreeBSD VM
         uses: vmactions/freebsd-vm@v1.5.3
         with:
-          release: "15.0"
+          release: "14.3"
           arch: x86_64
-          mem: 8192
+          mem: 12288
           cpu: 4
           cache-after-prepare: true
-          envs: CARGO_HOME CARGO_TARGET_DIR RIPGREP_VERSION
+          envs: CARGO_HOME CARGO_TARGET_DIR FREEBSD_RELEASE RUST_VERSION RIPGREP_VERSION
           prepare: |
             pkg update -f
-            pkg install -y bash cmake git gmake nasm perl5 pkgconf protobuf python3 rust
+            pkg install -y bash cmake curl git gmake nasm perl5 pkgconf protobuf python3 rustup-init sqlite3
+            if ! command -v rustup >/dev/null 2>&1; then
+              rustup-init -y --no-modify-path --profile minimal --default-toolchain "$RUST_VERSION"
+            fi
+            export PATH="$HOME/.cargo/bin:$PATH"
+            rustup toolchain install "$RUST_VERSION" --profile minimal
+            rustup default "$RUST_VERSION"
           run: |
             set -eu
+            export PATH="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+            export PROTOC=/usr/local/bin/protoc
+            export CARGO_INCREMENTAL=1
+            export CARGO_NET_RETRY=10
+            export CARGO_HTTP_TIMEOUT=600
 
             rustc --version
             cargo --version
-            mkdir -p "$CARGO_HOME" "$CARGO_TARGET_DIR" .freebsd-tools
+            protoc --version
+            freebsd-version -u
+            uname -m
+            mkdir -p "$CARGO_HOME" "$CARGO_TARGET_DIR" .freebsd-tools/bin dist
 
-            cargo install \
-              --locked \
-              --version "$RIPGREP_VERSION" \
-              --root "$PWD/.freebsd-tools" \
-              --no-default-features \
-              ripgrep
+            if [ ! -x .freebsd-tools/bin/rg ]; then
+              cargo install \
+                --locked \
+                --version "$RIPGREP_VERSION" \
+                --root "$PWD/.freebsd-tools" \
+                --no-default-features \
+                ripgrep
+            fi
 
             cargo fetch --locked
+
+            # nono 0.53.0 assumes Linux/macOS-only sandbox key handling.
             python3 - <<'PY'
             from pathlib import Path
 
@@ -77,30 +113,43 @@ jobs:
             if len(matches) != 1:
                 raise SystemExit(f"expected one nono-0.53.0 source, found {len(matches)}")
             path = matches[0]
-            lines = path.read_text().splitlines()
-            if not any('target_os = "freebsd"' in line for line in lines):
-                for index, line in enumerate(lines):
-                    if line.strip() == 'let key = (cap.resolved.clone(), cap.is_file);':
-                        indent = line[:len(line) - len(line.lstrip())]
-                        lines[index + 1:index + 1] = [
-                            f'{indent}#[cfg(not(any(target_os = "linux", target_os = "macos")))]',
-                            f'{indent}let key = (cap.original.clone(), cap.is_file);',
-                        ]
-                        break
-                else:
-                    raise SystemExit("nono capability.rs layout changed; refusing an unsafe patch")
-                path.write_text("\n".join(lines) + "\n")
+            text = path.read_text()
+            fallback = '            #[cfg(not(any(target_os = "linux", target_os = "macos")))]\n            let key = (cap.original.clone(), cap.is_file);\n'
+            if fallback not in text:
+                needle = '            #[cfg(target_os = "macos")]\n            let key = (cap.resolved.clone(), cap.is_file);\n'
+                if needle not in text:
+                    raise SystemExit("nono capability.rs layout changed")
+                text = text.replace(needle, needle + fallback, 1)
+                path.write_text(text)
+            PY
+
+            # sqlite-vec uses off_t on Unix but its vendored C source omits sys/types.h.
+            python3 - <<'PY'
+            from pathlib import Path
+
+            matches = list(Path(".cargo-freebsd/registry/src").glob("*/sqlite-vec-0.1.7-alpha.2/sqlite-vec.c"))
+            if len(matches) == 1:
+                path = matches[0]
+                text = path.read_text()
+                include = "#ifndef _WIN32\n#include <sys/types.h>\n#endif\n"
+                if include not in text:
+                    path.write_text(include + text)
+            elif len(matches) > 1:
+                raise SystemExit(f"expected at most one sqlite-vec source, found {len(matches)}")
             PY
 
             export GROK_TOOLS_BUNDLE_RG_PATH="$PWD/.freebsd-tools/bin/rg"
+            export GROK_SHELL_BUNDLE_RG_PATH="$PWD/.freebsd-tools/bin/rg"
+
             set +e
             cargo build \
               --locked \
+              --workspace \
               --release \
-              --package xai-grok-pager-bin \
-              --bin xai-grok-pager \
-              --features release-dist
+              --all-targets \
+              > .freebsd-build.log 2>&1
             build_status=$?
+            cat .freebsd-build.log
             set -e
             printf '%s\n' "$build_status" > .freebsd-build-status
             if [ "$build_status" -ne 0 ]; then
@@ -116,46 +165,123 @@ jobs:
               }
             ' Cargo.lock)
             test -n "$version"
+            printf '%s\n' "$version" > .freebsd-version
 
-            archive="grok-build-${version}-freebsd15-amd64.tar.gz"
-            staging="dist/grok-build-${version}-freebsd15-amd64"
-            rm -rf dist
-            mkdir -p "$staging"
-            install -m 0755 "$CARGO_TARGET_DIR/release/xai-grok-pager" "$staging/grok"
+            bundle="grok-build-${version}-freebsd14.3-amd64"
+            staging="dist/$bundle"
+            rm -rf "$staging"
+            mkdir -p "$staging/bin" "$staging/examples" "$staging/benches"
+
+            # Keep only top-level Cargo outputs. deps/build/incremental contain
+            # hashed internal executables and are deliberately not released.
+            find "$CARGO_TARGET_DIR/release" -maxdepth 1 -type f -perm -111 | while IFS= read -r file_path; do
+              if file "$file_path" | grep -q 'ELF 64-bit.*FreeBSD'; then
+                install -m 0755 "$file_path" "$staging/bin/$(basename "$file_path")"
+              fi
+            done
+            if [ -d "$CARGO_TARGET_DIR/release/examples" ]; then
+              find "$CARGO_TARGET_DIR/release/examples" -maxdepth 1 -type f -perm -111 | while IFS= read -r file_path; do
+                if file "$file_path" | grep -q 'ELF 64-bit.*FreeBSD'; then
+                  name=$(basename "$file_path")
+                  case "$name" in
+                    *-????????????????) continue ;;
+                  esac
+                  install -m 0755 "$file_path" "$staging/examples/$name"
+                fi
+              done
+            fi
+
+            test -x "$staging/bin/xai-grok-pager"
+            ln -sf xai-grok-pager "$staging/bin/grok"
             install -m 0644 LICENSE THIRD-PARTY-NOTICES "$staging/"
+            git rev-parse HEAD > "$staging/SOURCE_REV"
+            printf 'FreeBSD %s amd64\nRust %s\ngrok-build %s\n' \
+              "$FREEBSD_RELEASE" "$RUST_VERSION" "$version" > "$staging/BUILD-INFO.txt"
 
-            file "$staging/grok"
-            file "$staging/grok" | grep -q 'FreeBSD'
-            "$staging/grok" --version
-            tar -C dist -czf "dist/$archive" "$(basename "$staging")"
-            sha256 "dist/$archive" > "dist/$archive.sha256"
+            : > "$staging/ELF-AUDIT.txt"
+            find "$staging/bin" "$staging/examples" -type f -perm -111 | sort | while IFS= read -r file_path; do
+              echo "===== ${file_path#$staging/} =====" >> "$staging/ELF-AUDIT.txt"
+              file "$file_path" >> "$staging/ELF-AUDIT.txt"
+              ldd "$file_path" >> "$staging/ELF-AUDIT.txt" 2>&1 || true
+              echo >> "$staging/ELF-AUDIT.txt"
+            done
+
+            # A Serv00 FreeBSD 14.3 host provides libutil.so.9. Reject newer ABI
+            # or accidental Linux audio dependencies before publishing.
+            if grep -Eq 'libutil\.so\.10|libasound\.so\.2|not found' "$staging/ELF-AUDIT.txt"; then
+              cat "$staging/ELF-AUDIT.txt"
+              echo 'incompatible runtime dependency found' >&2
+              exit 1
+            fi
+            "$staging/bin/grok" --version 2> .grok-version.stderr
+            test ! -s .grok-version.stderr
+
+            find "$staging/bin" "$staging/examples" -type f -perm -111 \
+              -exec sha256 -q {} \; > /dev/null
+            (cd "$staging" && find bin examples -type f -perm -111 -print | sort) > "$staging/TARGETS.txt"
+            (cd dist && tar -czf "$bundle.tar.gz" "$bundle")
+            sha256 "dist/$bundle.tar.gz" > "dist/$bundle.tar.gz.sha256"
 
       - name: Save Cargo and target cache
-        if: always() && steps.cargo-cache.outputs.cache-hit != 'true'
+        if: always()
         uses: actions/cache/save@v4
         with:
           path: |
             .cargo-freebsd/registry
             .cargo-freebsd/git
-            target/freebsd15-amd64
+            .cargo-freebsd/bin
+            .freebsd-tools
+            target/freebsd14.3-amd64
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: grok-build-freebsd14.3-failure-log
+          path: .freebsd-build.log
+          if-no-files-found: warn
+
       - name: Check FreeBSD build result
-        run: test "$(cat .freebsd-build-status)" = 0
+        shell: bash
+        run: |
+          test -f .freebsd-build-status
+          test "$(cat .freebsd-build-status)" = 0
+          test -n "$(find dist -maxdepth 1 -name '*.tar.gz' -print -quit)"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: grok-build-native-freebsd15-amd64
+          name: grok-build-native-freebsd14.3-amd64
           path: |
             dist/*.tar.gz
             dist/*.tar.gz.sha256
           if-no-files-found: error
+          compression-level: 0
+
+      - name: Resolve release tag
+        id: release
+        if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.publish_release)
+        shell: bash
+        env:
+          MANUAL_TAG: ${{ inputs.release_tag }}
+        run: |
+          version=$(cat .freebsd-version)
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            tag="${GITHUB_REF#refs/tags/}"
+          elif [[ -n "$MANUAL_TAG" ]]; then
+            tag="$MANUAL_TAG"
+          else
+            tag="grok-v${version}-freebsd14.3"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Publish GitHub release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: steps.release.outputs.tag != ''
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.release.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           generate_release_notes: true
           files: |
             dist/*.tar.gz

@@ -8,7 +8,12 @@
 #[cfg(all(feature = "jemalloc", unix))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
-#[cfg(all(feature = "jemalloc", feature = "release-dist", unix))]
+#[cfg(all(
+    feature = "jemalloc",
+    feature = "release-dist",
+    unix,
+    not(target_os = "freebsd")
+))]
 mod jemalloc_malloc_conf {
     /// jemalloc looks up `extern const char *malloc_conf` — a thin pointer,
     /// not a Rust `&[u8]` fat pointer.
