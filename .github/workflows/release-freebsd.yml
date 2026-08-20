@@ -77,15 +77,15 @@ jobs:
             export ASSUME_ALWAYS_YES=yes
             pkg update -f
             pkg install -y bash cmake curl git gmake nasm perl5 pkgconf protobuf python3 rustup-init sqlite3
+            export PATH="$CARGO_HOME/bin:$PATH"
             if ! command -v rustup >/dev/null 2>&1; then
               rustup-init -y --no-modify-path --profile minimal --default-toolchain "$RUST_VERSION"
             fi
-            export PATH="$HOME/.cargo/bin:$PATH"
             rustup toolchain install "$RUST_VERSION" --profile minimal
             rustup default "$RUST_VERSION"
           run: |
             set -eu
-            export PATH="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+            export PATH="$CARGO_HOME/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
             export PROTOC=/usr/local/bin/protoc
             export CARGO_INCREMENTAL=1
             export CARGO_NET_RETRY=10
