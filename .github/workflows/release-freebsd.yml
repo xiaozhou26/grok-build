@@ -76,7 +76,7 @@ jobs:
             export IGNORE_OSVERSION=yes
             export ASSUME_ALWAYS_YES=yes
             pkg update -f
-            pkg install -y bash cmake curl git gmake nasm perl5 pkgconf protobuf python3 rustup-init sqlite3
+            pkg install -y bash ca_root_nss cmake curl git gmake nasm perl5 pkgconf protobuf python3 rustup-init sqlite3
             export PATH="$CARGO_HOME/bin:$PATH"
             if ! command -v rustup >/dev/null 2>&1; then
               rustup-init -y --no-modify-path --profile minimal --default-toolchain "$RUST_VERSION"
@@ -90,6 +90,10 @@ jobs:
             export CARGO_INCREMENTAL=1
             export CARGO_NET_RETRY=10
             export CARGO_HTTP_TIMEOUT=600
+            export SSL_CERT_FILE=/usr/local/share/certs/ca-root-nss.crt
+            export GIT_SSL_CAINFO="$SSL_CERT_FILE"
+            export CARGO_HTTP_CAINFO="$SSL_CERT_FILE"
+            test -r "$SSL_CERT_FILE"
 
             rustc --version
             cargo --version
