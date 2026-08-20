@@ -185,7 +185,9 @@ jobs:
               --locked \
               --workspace \
               --release \
-              --all-targets \
+              --bins \
+              --examples \
+              --benches \
               > .freebsd-build.log 2>&1
             build_status=$?
             cat .freebsd-build.log
