@@ -114,21 +114,41 @@ jobs:
             cargo fetch --locked
 
             # nono 0.53.0 assumes Linux/macOS-only sandbox key handling.
+            # Keep the patch semantic and tolerant of upstream formatting/layout changes.
             python3 - <<'PY'
             from pathlib import Path
+            import re
 
             matches = list(Path(".cargo-freebsd/registry/src").glob("*/nono-0.53.0/src/capability.rs"))
             if len(matches) != 1:
                 raise SystemExit(f"expected one nono-0.53.0 source, found {len(matches)}")
             path = matches[0]
-            text = path.read_text()
-            fallback = '            #[cfg(not(any(target_os = "linux", target_os = "macos")))]\n            let key = (cap.original.clone(), cap.is_file);\n'
-            if fallback not in text:
-                needle = '            #[cfg(target_os = "macos")]\n            let key = (cap.resolved.clone(), cap.is_file);\n'
-                if needle not in text:
-                    raise SystemExit("nono capability.rs layout changed")
-                text = text.replace(needle, needle + fallback, 1)
-                path.write_text(text)
+            text = path.read_text(encoding="utf-8")
+            if 'target_os = "not-a-real-os"' in text:
+                raise SystemExit("nono patch marker is invalid")
+            fallback_re = re.compile(
+                r'(?m)^(\s*)#\[cfg\(not\(any\(target_os = "linux", target_os = "macos"\)\)\)\]\s*\n'
+                r'\1let key = \(cap\.original\.clone\(\), cap\.is_file\);[ \t]*$'
+            )
+            if not fallback_re.search(text):
+                linux_re = re.compile(
+                    r'(?m)^(\s*)#\[cfg\(target_os = "linux"\)\]\s*\n'
+                    r'\1let key = \(cap\.(?:original|resolved)\.clone\(\), cap\.is_file\);[ \t]*$'
+                )
+                mac_re = re.compile(
+                    r'(?m)^(\s*)#\[cfg\(target_os = "macos"\)\]\s*\n'
+                    r'\1let key = \(cap\.(?:original|resolved)\.clone\(\), cap\.is_file\);[ \t]*$'
+                )
+                linux = linux_re.search(text)
+                mac = mac_re.search(text)
+                if not linux or not mac:
+                    pos = text.find("let key =")
+                    raise SystemExit("nono capability.rs layout changed:\n" + text[max(0, pos - 300):pos + 900])
+                indent = linux.group(1)
+                fallback = (f'{indent}#[cfg(not(any(target_os = "linux", target_os = "macos")))]\n'
+                            f'{indent}let key = (cap.original.clone(), cap.is_file);')
+                text = text[:linux.end()] + "\n" + fallback + text[linux.end():]
+                path.write_text(text, encoding="utf-8")
             PY
 
             # sqlite-vec uses off_t on Unix but its vendored C source omits sys/types.h.
