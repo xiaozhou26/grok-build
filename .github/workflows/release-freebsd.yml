@@ -71,6 +71,10 @@ jobs:
           cache-after-prepare: true
           envs: CARGO_HOME CARGO_TARGET_DIR FREEBSD_RELEASE RUST_VERSION RIPGREP_VERSION
           prepare: |
+            # FreeBSD:14 packages may be built on a newer 14.x patch release.
+            # Keep the VM/base ABI at 14.3 while allowing build-tool packages.
+            export IGNORE_OSVERSION=yes
+            export ASSUME_ALWAYS_YES=yes
             pkg update -f
             pkg install -y bash cmake curl git gmake nasm perl5 pkgconf protobuf python3 rustup-init sqlite3
             if ! command -v rustup >/dev/null 2>&1; then
